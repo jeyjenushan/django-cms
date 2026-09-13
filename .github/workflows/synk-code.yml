@@ -1,0 +1,122 @@
+name: Snyk Code Analysis
+
+on:
+  push:
+    branches:
+      - experiment-vulnerable
+      - experiment-fixed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze Python Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Record scanned commit
+        run: |
+          git rev-parse HEAD > scanned-commit.txt
+          echo "Scanned commit: $(cat scanned-commit.txt)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Snyk CLI
+        run: |
+          npm install -g snyk
+          snyk --version > snyk-version.txt
+          cat snyk-version.txt
+
+      - name: Check Snyk token
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "Missing SNYK_TOKEN repository secret."
+            exit 1
+          fi
+
+      - name: Record scan start time
+        run: echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Run Snyk Code scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        shell: bash
+        run: |
+          set +e
+          snyk code test --sarif-file-output=snyk.sarif \
+            2>&1 | tee snyk_output.txt
+          SCAN_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+
+          echo "$SCAN_EXIT_CODE" > snyk-exit-code.txt
+          echo "Snyk exit code: $SCAN_EXIT_CODE"
+
+          case "$SCAN_EXIT_CODE" in
+            0)
+              echo "Scan completed: no findings."
+              ;;
+            1)
+              echo "Scan completed: findings reported."
+              ;;
+            *)
+              echo "Scan failed. Check snyk_output.txt."
+              exit "$SCAN_EXIT_CODE"
+              ;;
+          esac
+
+      - name: Record scan duration
+        if: always()
+        run: |
+          if [ -n "${START_TIME:-}" ]; then
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            echo "Snyk Code scan elapsed time: $DURATION seconds" \
+              | tee duration.txt
+          fi
+
+      - name: Verify SARIF output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("snyk.sarif")
+          if not path.exists():
+              raise SystemExit("SARIF was not generated. Check the scan log.")
+
+          data = json.loads(path.read_text(encoding="utf-8"))
+          for run in data.get("runs", []):
+              print(f"Findings: {len(run.get('results', []))}")
+          PY
+
+      - name: Upload analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-code-results-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            snyk.sarif
+            snyk_output.txt
+            scanned-commit.txt
+            snyk-version.txt
+            snyk-exit-code.txt
+            duration.txt
+          if-no-files-found: error
+
+      - name: Upload SARIF to GitHub Security
+        if: success() && hashFiles('snyk.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
+          category: snyk-code
