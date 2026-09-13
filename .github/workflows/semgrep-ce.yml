@@ -1,4 +1,4 @@
-name: CodeQL Analysis
+name: Semgrep CE Analysis
 
 on:
   push:
@@ -12,9 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
@@ -30,30 +28,36 @@ jobs:
           git rev-parse HEAD > scanned-commit.txt
           echo "Scanned commit: $(cat scanned-commit.txt)"
 
-      - name: Record start time
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Semgrep
+        run: |
+          python -m pip install semgrep
+          semgrep --version > semgrep-version.txt
+          cat semgrep-version.txt
+
+      - name: Record scan start time
         run: echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: python
-          build-mode: none
-          queries: security-and-quality
+      - name: Run Semgrep CE
+        run: |
+          semgrep scan \
+            --config "p/python" \
+            --sarif \
+            --output semgrep.sarif \
+            --metrics=off \
+            .
 
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:python"
-          output: results
-          upload: true
-
-      - name: Record duration
+      - name: Record scan duration
         if: always()
         run: |
           if [ -n "${START_TIME:-}" ]; then
             END_TIME=$(date +%s)
             DURATION=$((END_TIME - START_TIME))
-            echo "CodeQL initialization and analysis elapsed time: $DURATION seconds" \
+            echo "Semgrep CE scan elapsed time: $DURATION seconds" \
               | tee duration.txt
           fi
 
@@ -61,9 +65,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: codeql-results-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: semgrep-ce-results-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            results/
+            semgrep.sarif
             scanned-commit.txt
+            semgrep-version.txt
             duration.txt
           if-no-files-found: error
