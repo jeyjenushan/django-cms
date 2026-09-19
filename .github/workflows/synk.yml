@@ -3,7 +3,7 @@ name: Snyk Code Analysis
 on:
   push:
     branches:
-      -experiment-vulnerable-defect-before-fixed
+      - experiment-vulnerable-defect-before-fixed
       - experiment-fixed-defect
   workflow_dispatch:
 
