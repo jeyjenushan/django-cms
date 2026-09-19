@@ -1,0 +1,117 @@
+name: Semgrep CE Analysis
+
+on:
+  push:
+    branches:
+      - experiment-vulnerable-defect-before-fixed
+      - experiment-fixed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Python Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # Evidence 1: Exact commit that Semgrep scanned
+      # -------------------------------------------------------
+      - name: Record scanned commit
+        run: |
+          git rev-parse HEAD > scanned-commit.txt
+          echo "Scanned commit: $(cat scanned-commit.txt)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # -------------------------------------------------------
+      # Install Semgrep CE and record exact version
+      # -------------------------------------------------------
+      - name: Install Semgrep CE
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install semgrep
+          semgrep --version | tee semgrep-version.txt
+
+      # -------------------------------------------------------
+      # Measure only Semgrep scan time
+      # Installation time is NOT included
+      # -------------------------------------------------------
+      - name: Record scan start time
+        run: |
+          echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+
+      # -------------------------------------------------------
+      # Run Semgrep CE
+      # p/python = Semgrep community Python ruleset
+      #
+      # --sarif:
+      # Produce machine-readable SARIF output.
+      #
+      # --metrics=off:
+      # Disable Semgrep metrics/telemetry.
+      #
+      # --no-error:
+      # Findings do not fail the GitHub Actions job.
+      # -------------------------------------------------------
+      - name: Run Semgrep CE
+        run: |
+          semgrep scan \
+            --config "p/python" \
+            --sarif \
+            --output semgrep.sarif \
+            --metrics=off \
+            --no-error \
+            .
+
+      # -------------------------------------------------------
+      # Measure scan duration
+      # -------------------------------------------------------
+      - name: Record scan duration
+        if: always()
+        run: |
+          if [ -n "${START_TIME:-}" ]; then
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            echo "$DURATION" > duration-seconds.txt
+            echo "Semgrep CE scan elapsed time: $DURATION seconds" \
+              | tee duration.txt
+          fi
+
+      # -------------------------------------------------------
+      # Basic SARIF validation/evidence
+      # -------------------------------------------------------
+      - name: Verify SARIF output
+        if: always()
+        run: |
+          if [ -f semgrep.sarif ]; then
+            echo "SARIF generated successfully"
+            ls -lh semgrep.sarif
+          else
+            echo "SARIF file was not generated"
+            exit 1
+          fi
+
+      # -------------------------------------------------------
+      # Upload all research evidence
+      # -------------------------------------------------------
+      - name: Upload analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-ce-results-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            semgrep.sarif
+            scanned-commit.txt
+            semgrep-version.txt
+            duration.txt
+            duration-seconds.txt
+          if-no-files-found: error
